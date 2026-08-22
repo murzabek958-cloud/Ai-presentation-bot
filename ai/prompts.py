@@ -1,0 +1,173 @@
+"""
+All prompt templates for the Gemini Presentation Planner.
+No API calls, no Pydantic imports — pure prompt text.
+"""
+
+# ---------------------------------------------------------------------------
+# Style descriptions
+# ---------------------------------------------------------------------------
+
+STYLE_DESCRIPTIONS: dict[str, str] = {
+    "academic": (
+        "Formal academic style. Structured, informative, and citation-friendly. "
+        "Suitable for university assignments and scientific presentations."
+    ),
+    "modern": (
+        "Clean and contemporary style. Bold headings, concise bullet points, "
+        "and visual elements. Suitable for conferences and tech topics."
+    ),
+    "minimal": (
+        "Minimalist style. Maximum whitespace, short phrases, strong typography. "
+        "Suitable for design-focused or concept-driven presentations."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Layout descriptions
+# ---------------------------------------------------------------------------
+
+LAYOUT_DESCRIPTIONS: dict[str, str] = {
+    "title": "Opening slide. Use only for the first slide of the presentation.",
+    "title_text": "Slide with a heading and a body paragraph. Best for definitions, introductions, or explanations.",
+    "image_text": "Slide with an image beside a text block. Use when a visual example would help understanding. This is the ONLY layout that may have a non-null image_query.",
+    "two_columns": "Two equal columns of text. Use for listing parallel ideas, pros/cons (non-comparative), or two subtopics.",
+    "comparison": "Side-by-side comparison with distinct left and right labels. Use for contrasting two concepts or approaches.",
+    "timeline": "Chronological list of events or steps. Use for history, process flow, or development stages.",
+    "statistics": "Slide emphasising numbers and data points. Use when key figures are the main message.",
+    "chart": "Slide with a chart description. Use when trend, distribution, or proportion data should be visualised.",
+    "quote": "Large pull-quote from a notable source. Use sparingly — one per presentation at most.",
+    "conclusion": "Closing slide with a summary and optional call-to-action. Use only as the last slide.",
+    "agenda": "Table-of-contents slide showing numbered sections of the presentation. Use once, right after the title slide.",
+}
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
+You are an expert academic presentation planner for university students.
+
+Your task is to analyse a topic and produce a structured presentation plan \
+in strict JSON format. You will be given a topic, slide count, language, and style.
+
+RULES:
+- Return ONLY a valid JSON object. No markdown, no code fences, no extra text.
+- Do not invent statistics, citations, or facts you are not certain about.
+- Keep slide text concise — bullet points max 10 words each, body paragraphs max 40 words.
+- Do not fill every slide with the same layout. Vary layouts meaningfully.
+- Never use "title" layout except for slide index 0.
+- Never use "conclusion" layout except for the very last slide.
+- Use "agenda" layout at most once, on slide index 1 (right after the title slide). Do not use it for presentations shorter than 5 slides.
+- Use layout "image_text" (and a non-null image_query) only when a visual genuinely aids understanding.
+- CRITICAL: If image_query is non-null, layout MUST be exactly "image_text". Never set image_query on any other layout.
+- Adapt the structure to the topic: a historical topic suits "timeline", \
+a data topic suits "statistics" or "chart", a comparative topic suits "comparison".
+- The JSON must match this exact schema:
+
+{
+  "topic": string,
+  "style": "academic" | "modern" | "minimal",
+  "slide_count": integer,
+  "slides": [
+    {
+      "index": integer,          // 0-based, consecutive
+      "layout": string,          // one of the allowed layout names
+      "title": string,
+      "content": object,         // fields depend on layout (see below)
+      "image_query": string | null,
+      "speaker_notes": string | null
+    }
+  ],
+  "metadata": {
+    "language": "kk" | "ru" | "en",
+    "generated_at": "ISO-8601 datetime string"
+  }
+}
+
+CONTENT FIELDS PER LAYOUT:
+- title:        { "subtitle": str, "author": str }
+- title_text:   { "body": str }
+- image_text:   { "body": str }
+- two_columns:  { "left_title": str, "left_body": str, "right_title": str, "right_body": str }
+- comparison:   { "left_label": str, "left_points": [str], "right_label": str, "right_points": [str] }
+- timeline:     { "events": [{ "year": str, "description": str }] }
+- statistics:   { "stats": [{ "value": str, "label": str }] }
+- chart:        { "chart_type": str, "description": str, "data_hint": str }
+- quote:        { "quote": str, "author": str, "source": str | null }
+- conclusion:   { "summary": str, "call_to_action": str | null }
+- agenda:       { "items": [{ "number": "01", "title": str, "subtitle": str }] }  // 3–8 items
+
+Write the slides in the language specified by the user. \
+All slide titles and content must be in that language.\
+"""
+
+# ---------------------------------------------------------------------------
+# User prompt builder
+# ---------------------------------------------------------------------------
+
+def build_user_prompt(
+    topic: str,
+    slide_count: int,
+    language: str,
+    style: str,
+    require_conclusion: bool = False,
+    require_statistics: bool = False,
+    require_sources: bool = False,
+    include_images: bool = True,
+    max_text_per_slide: bool = False,
+    extra_instructions: str = "",
+) -> str:
+    style_desc = STYLE_DESCRIPTIONS.get(style, style)
+
+    lines = [
+        "Create a presentation plan for the following topic.",
+        "",
+        f"Topic: {topic}",
+        f"Number of slides: {slide_count}",
+        f"Language: {language}",
+        f"Style: {style} — {style_desc}",
+    ]
+
+    # --- Collect mandatory user requirements ---
+    requirements: list[str] = []
+
+    if require_conclusion:
+        requirements.append(
+            "MANDATORY: The last slide MUST use the 'conclusion' layout."
+        )
+    if require_statistics:
+        requirements.append(
+            "MANDATORY: Include at least one slide using 'statistics' or 'chart' layout "
+            "with real numerical data relevant to the topic."
+        )
+    if require_sources:
+        requirements.append(
+            "MANDATORY: At least one slide must reference credible sources or citations. "
+            "Use speaker_notes or slide content to list them."
+        )
+    if not include_images:
+        requirements.append(
+            "MANDATORY: Do NOT include any image_query fields. "
+            "Set image_query to null on every slide."
+        )
+    if max_text_per_slide:
+        requirements.append(
+            "MANDATORY: Keep text minimal — bullet points max 6 words each, "
+            "body paragraphs max 20 words. Prefer short phrases over sentences."
+        )
+    if extra_instructions.strip():
+        requirements.append(f"ADDITIONAL USER INSTRUCTION: {extra_instructions.strip()}")
+
+    if requirements:
+        lines.append("")
+        lines.append("USER REQUIREMENTS (MUST be followed exactly):")
+        for req in requirements:
+            lines.append(f"- {req}")
+
+    lines += [
+        "",
+        "Return a single JSON object matching the schema in the system prompt. "
+        "No extra output.",
+    ]
+
+    return "\n".join(lines)
