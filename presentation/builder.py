@@ -123,27 +123,72 @@ class PPTXBuilder:
         logger.debug("Presentation initialised (theme=%s)", self._theme.name)
 
     # ------------------------------------------------------------------
-    # Slide addition
+    # Phase 5 integration API
     # ------------------------------------------------------------------
 
-    def add_slide(self, slide: SlideData, image_path: str | None = None) -> None:
+    def prepare_slide(
+        self,
+        slide: SlideData,
+        directive=None,
+        image_path: str | None = None,
+    ):
+        """
+        Create a pptx_slide object and apply background, returning it plus
+        context needed by a CompositionHandler.
+
+        This is the Phase 5 integration point: it exposes pptx_slide to
+        CompositionHandler before any _render_* call, so concrete composition
+        implementations can draw freely on the blank canvas while still
+        relying on builder helpers (_add_text, _add_rect, etc).
+
+        Parameters
+        ----------
+        slide:
+            SlideData for this slide.
+        directive:
+            Optional SlideDesignDirective.  When present and
+            directive.background_override is set, that colour is used for
+            the slide background instead of theme.background.
+        image_path:
+            Optional image file path (validated internally).
+
+        Returns
+        -------
+        tuple(pptx_slide, variant: str, resolved_image_path: Path | None)
+            - pptx_slide : python-pptx Slide object, blank and background-filled.
+            - variant    : str selected by VariantSelector (for fallback use).
+            - resolved_image_path : validated Path or None.
+
+        Notes
+        -----
+        - AGENDA layout is handled entirely inside this method (calls
+          render_agenda and returns early with variant='agenda', path=None).
+        - Caller is responsible for calling either the CompositionHandler
+          or _dispatch_render() after receiving the return values.
+        - add_slide() remains the default path and delegates here internally.
+        """
         if self._prs is None:
             raise BuilderError("Presentation not initialised. Call create_presentation() first.")
 
         blank_layout = self._prs.slide_layouts[6]
         pptx_slide   = self._prs.slides.add_slide(blank_layout)
 
-        # Background — every layout
+        # Background — apply directive.background_override if provided
+        bg_color = self._theme.background
+        if directive is not None:
+            override = getattr(directive, "background_override", None)
+            if override:
+                bg_color = override
+
         bg   = pptx_slide.background
         fill = bg.fill
         fill.solid()
-        fill.fore_color.rgb = _hex_to_rgb(self._theme.background)
+        fill.fore_color.rgb = _hex_to_rgb(bg_color)
 
-        # Pick variant for this slide's layout
+        # Variant — still used by placeholder handlers / _dispatch_render()
         variant = self._selector.pick(slide.layout)
 
-        # Resolve image_path: accept str or Path, validate existence.
-        # Only IMAGE_TEXT layout embeds pictures; any other layout ignores the path.
+        # Image path resolution
         resolved_image_path: Path | None = None
         if image_path is not None:
             candidate = Path(image_path)
@@ -163,15 +208,40 @@ class PPTXBuilder:
                 slide.layout.value,
             )
 
-        # AGENDA uses composition API (theme passed directly, no variant needed)
+        # AGENDA: render immediately (uses its own composition API)
         if slide.layout == SlideLayout.AGENDA:
             render_agenda(pptx_slide, slide, self._theme)
             logger.debug(
-                "Added slide index=%d layout=agenda title=%r",
+                "prepare_slide: index=%d layout=agenda title=%r",
                 slide.index, slide.title,
             )
-            return
+            return pptx_slide, "agenda", None
 
+        return pptx_slide, variant, resolved_image_path
+
+    def _dispatch_render(
+        self,
+        pptx_slide,
+        slide: SlideData,
+        variant: str,
+        resolved_image_path: "Path | None" = None,
+    ) -> None:
+        """
+        Dispatch pptx_slide to the appropriate _render_* method.
+
+        This is the second half of what add_slide() used to do in one step.
+        It is called by:
+          - add_slide()        — existing path (unchanged behaviour)
+          - renderer._render_with_selector() — Phase 5, when handler is a
+            placeholder that needs the existing _render_* logic.
+
+        Parameters
+        ----------
+        pptx_slide : python-pptx Slide (already created and background-filled).
+        slide      : SlideData.
+        variant    : str from VariantSelector.
+        resolved_image_path : validated Path or None.
+        """
         dispatch = {
             SlideLayout.TITLE:       self._render_title,
             SlideLayout.TITLE_TEXT:  self._render_title_text,
@@ -184,12 +254,38 @@ class PPTXBuilder:
             SlideLayout.QUOTE:       self._render_quote,
             SlideLayout.CONCLUSION:  self._render_conclusion,
         }
-        renderer = dispatch.get(slide.layout, self._render_fallback)
+        render_fn = dispatch.get(slide.layout, self._render_fallback)
 
         if slide.layout == SlideLayout.IMAGE_TEXT:
-            renderer(pptx_slide, slide, variant, image_path=resolved_image_path)
+            render_fn(pptx_slide, slide, variant, image_path=resolved_image_path)
         else:
-            renderer(pptx_slide, slide, variant)
+            render_fn(pptx_slide, slide, variant)
+
+    # ------------------------------------------------------------------
+    # Slide addition
+    # ------------------------------------------------------------------
+
+    def add_slide(self, slide: SlideData, image_path: str | None = None) -> None:
+        """
+        Add one slide to the presentation (existing public API — unchanged).
+
+        Internally delegates to prepare_slide() + _dispatch_render() so all
+        background, variant, image-resolution, and AGENDA logic lives in one
+        place.  Behaviour is 100% identical to the pre-Phase-5 implementation.
+        """
+        pptx_slide, variant, resolved_image_path = self.prepare_slide(
+            slide, directive=None, image_path=image_path,
+        )
+
+        # AGENDA is fully handled inside prepare_slide(); nothing more to do.
+        if slide.layout == SlideLayout.AGENDA:
+            logger.debug(
+                "Added slide index=%d layout=agenda title=%r",
+                slide.index, slide.title,
+            )
+            return
+
+        self._dispatch_render(pptx_slide, slide, variant, resolved_image_path)
 
         logger.debug(
             "Added slide index=%d layout=%s variant=%s title=%r image_path=%r resolved=%s",

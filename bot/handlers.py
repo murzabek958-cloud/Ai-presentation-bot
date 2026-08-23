@@ -199,16 +199,15 @@ async def handle_topic(message: Message) -> None:
         reqs.design_intent,
         design_plan.design_rationale[:80] if design_plan.design_rationale else "",
     )
-    # NOTE: design_plan is ready for the renderer/CompositionSelector.
-    # PresentationRenderer does not yet accept design_plan (renderer.py is
-    # unchanged in this step).  The integration point is prepared here;
-    # renderer.py will be updated in the next step to consume design_plan.
-
+    # design_plan flows into PresentationRenderer so directive_for() is
+    # available to Phase 4 (CompositionSelector).  renderer.py accepts None
+    # safely — Gemini failure never reaches the user as a crash.
     try:
         renderer = PresentationRenderer(
             plan,
             style_is_explicit=reqs.style is not None,
             design_intent=reqs.design_intent,
+            design_plan=design_plan,
         )
         renderer.render(image_paths=image_paths)
         renderer.save(str(output_path))
