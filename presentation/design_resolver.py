@@ -287,7 +287,7 @@ class DesignResolver:
         # Override the base palette's brand colors with the fixed Theme's
         # values so DesignSpec.to_theme() produces an identical Theme.
         return _Palette(
-            name=f"explicit_{style}",
+            name=style,
             background=theme.background,
             surface=theme.background,      # no separate surface in Theme
             text_primary=theme.text_dark,

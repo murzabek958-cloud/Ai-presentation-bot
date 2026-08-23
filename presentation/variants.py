@@ -74,6 +74,11 @@ CONCLUSION_STATEMENT    = "statement"
 CONCLUSION_SUMMARY_CARDS = "summary_cards"
 CONCLUSION_MINIMAL      = "minimal_final"
 
+# AGENDA
+AGENDA_NUMBERED_LIST    = "numbered_list"
+AGENDA_CARD_GRID        = "card_grid"
+AGENDA_TIMELINE_STRIP   = "timeline_strip"
+
 # ---------------------------------------------------------------------------
 # Master mapping: SlideLayout → ordered list of variant names
 # ---------------------------------------------------------------------------
@@ -128,6 +133,11 @@ LAYOUT_VARIANTS: Dict[SlideLayout, List[str]] = {
         CONCLUSION_STATEMENT,
         CONCLUSION_SUMMARY_CARDS,
         CONCLUSION_MINIMAL,
+    ],
+    SlideLayout.AGENDA: [
+        AGENDA_NUMBERED_LIST,
+        AGENDA_CARD_GRID,
+        AGENDA_TIMELINE_STRIP,
     ],
 }
 

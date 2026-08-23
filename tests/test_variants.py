@@ -206,6 +206,12 @@ LAYOUT_CONTENTS: dict[SlideLayout, dict] = {
         "summary": "We covered the key points.",
         "call_to_action": "Start building today.",
     },
+    SlideLayout.AGENDA: {
+        "items": [
+            {"number": "01", "title": "Introduction", "subtitle": "Overview"},
+            {"number": "02", "title": "Main Content", "subtitle": "Details"},
+        ]
+    },
 }
 
 

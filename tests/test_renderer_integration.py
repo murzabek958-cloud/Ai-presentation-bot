@@ -45,6 +45,10 @@ def _make_plan(
         SlideLayout.COMPARISON:  {"left_label": "A", "left_points": ["x"], "right_label": "B", "right_points": ["y"]},
         SlideLayout.IMAGE_TEXT:  {"body": "Image body."},
         SlideLayout.CHART:       {"chart_type": "bar", "description": "desc"},
+        SlideLayout.AGENDA:      {"items": [
+            {"number": "01", "title": "Topic One", "subtitle": "First section"},
+            {"number": "02", "title": "Topic Two", "subtitle": "Second section"},
+        ]},
     }
 
     slides = [
