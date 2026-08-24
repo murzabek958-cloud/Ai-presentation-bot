@@ -301,6 +301,26 @@ class SlideDesignDirective(BaseModel):
     background_override:  str | None                      = None  # '#RRGGBB'
     notes:                str                             = ""
 
+    # ── Gemini Visual Design modifiers (from VisualDesignSpec) ────────────
+    # These carry Gemini Creative Director output into builder._render_*
+    # without replacing builder's layout logic.
+    #
+    # title_font_size_override: replace builder's _fit_text_size for title.
+    #   None → builder chooses adaptively (default, safe).
+    #   int  → Gemini's font_size from elements[type=title].font_size.
+    #
+    # title_color_override: replace theme.primary for title text color.
+    #   None → theme color (default, safe).
+    #   str  → '#RRGGBB' from elements[type=title].font_color.
+    #
+    # accent_color_override: replace theme.accent for decorative elements
+    #   (rules, stripes, card headers).
+    #   None → theme accent (default, safe).
+    #   str  → '#RRGGBB' from VisualDesignSpec.presentation.accent_color.
+    title_font_size_override: int | None                  = Field(None, ge=8, le=96)
+    title_color_override:     str | None                  = None  # '#RRGGBB'
+    accent_color_override:    str | None                  = None  # '#RRGGBB'
+
     @model_validator(mode="after")
     def _normalise_image_fields(self) -> SlideDesignDirective:
         """If no image treatment specified, default image_position to NONE."""

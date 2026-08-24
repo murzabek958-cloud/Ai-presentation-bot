@@ -107,6 +107,7 @@ class PPTXBuilder:
         self._theme = theme
         self._prs: Presentation | None = None
         self._selector = VariantSelector()
+        self._current_directive = None   # set by prepare_slide, read by _add_slide_title
         self.create_presentation()
 
     # ------------------------------------------------------------------
@@ -216,6 +217,10 @@ class PPTXBuilder:
                 slide.index, slide.title,
             )
             return pptx_slide, "agenda", None
+
+        # Store directive so _add_slide_title can read Gemini overrides
+        # without changing every _render_* method signature.
+        self._current_directive = directive
 
         return pptx_slide, variant, resolved_image_path
 
@@ -489,7 +494,7 @@ class PPTXBuilder:
 
         else:  # image_split (default)
             # Title top, image right, body left — balanced 55/45 split
-            self._add_slide_title(pptx_slide, slide.title)
+            self._add_slide_title(pptx_slide, slide.title, directive=self._current_directive)
             text_w = Inches(6.9)
             img_x  = Inches(7.55)
             img_w  = Inches(5.33)
@@ -533,7 +538,7 @@ class PPTXBuilder:
         rt = c.get("right_title", "")
         rb = c.get("right_body", "")
 
-        self._add_slide_title(pptx_slide, slide.title)
+        self._add_slide_title(pptx_slide, slide.title, directive=self._current_directive)
         cont_y = Inches(TK.content_start_y)
         cont_h = SLIDE_HEIGHT - cont_y - Inches(0.18)
 
@@ -631,7 +636,7 @@ class PPTXBuilder:
                     r.font.color.rgb = _hex_to_rgb(color)
                     r.font.name  = font
 
-        self._add_slide_title(pptx_slide, slide.title)
+        self._add_slide_title(pptx_slide, slide.title, directive=self._current_directive)
         cont_y = Inches(TK.content_start_y)
         cont_h = SLIDE_HEIGHT - cont_y - Inches(0.18)
 
@@ -738,7 +743,7 @@ class PPTXBuilder:
         if not isinstance(events, list):
             events = []
 
-        self._add_slide_title(pptx_slide, slide.title)
+        self._add_slide_title(pptx_slide, slide.title, directive=self._current_directive)
         cont_y = Inches(TK.content_start_y)
 
         if variant == "horizontal":
@@ -863,7 +868,7 @@ class PPTXBuilder:
         if not isinstance(stats, list):
             stats = []
 
-        self._add_slide_title(pptx_slide, slide.title)
+        self._add_slide_title(pptx_slide, slide.title, directive=self._current_directive)
         items = stats[:4]
         n     = len(items)
         if n == 0:
@@ -1015,7 +1020,7 @@ class PPTXBuilder:
         description= c.get("description", "")
         data_hint  = c.get("data_hint", "")
 
-        self._add_slide_title(pptx_slide, slide.title)
+        self._add_slide_title(pptx_slide, slide.title, directive=self._current_directive)
         cont_y = Inches(TK.content_start_y)
         cont_h = SLIDE_HEIGHT - cont_y - Inches(0.18)
 
@@ -1260,20 +1265,46 @@ class PPTXBuilder:
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def _add_slide_title(self, pptx_slide, title: str) -> None:
-        """Standard top-area title used by most content layouts."""
-        title_size = _fit_text_size(title, TK.title_font_size, 22,
-                                    threshold_short=40, threshold_medium=100)
+    def _add_slide_title(self, pptx_slide, title: str, directive=None) -> None:
+        """Standard top-area title used by most content layouts.
+
+        Gemini visual overrides applied if present in directive:
+          title_font_size_override → replaces _fit_text_size adaptive sizing
+          title_color_override     → replaces theme.primary for title text
+          accent_color_override    → replaces theme.accent for the rule line
+        All are optional; None → theme defaults (safe, backward-compatible).
+        """
+        # Font size: Gemini override wins, otherwise adaptive
+        if directive is not None and getattr(directive, "title_font_size_override", None):
+            title_size = int(directive.title_font_size_override)
+        else:
+            title_size = _fit_text_size(title, TK.title_font_size, 22,
+                                        threshold_short=40, threshold_medium=100)
+
+        # Title color
+        title_color = self._theme.primary
+        if directive is not None:
+            ov = getattr(directive, "title_color_override", None)
+            if ov and isinstance(ov, str) and ov.startswith("#"):
+                title_color = ov
+
+        # Accent color for rule line
+        accent_color = self._theme.accent
+        if directive is not None:
+            ov = getattr(directive, "accent_color_override", None)
+            if ov and isinstance(ov, str) and ov.startswith("#"):
+                accent_color = ov
+
         _add_text(pptx_slide, title,
                   Inches(TK.margin_outer), Inches(0.2),
                   Inches(TK.content_width), Inches(TK.title_height),
-                  title_size, self._theme.primary, self._theme.font_heading, bold=True)
+                  title_size, title_color, self._theme.font_heading, bold=True)
         _add_rect(pptx_slide,
                   Inches(TK.margin_outer),
                   Inches(0.2 + TK.title_height + TK.gap_title_rule),
                   Inches(TK.content_width),
                   Inches(TK.title_rule_height),
-                  self._theme.accent)
+                  accent_color)
 
     def _render_fallback(self, pptx_slide, slide: SlideData, variant: str) -> None:
         """Generic fallback — title only."""

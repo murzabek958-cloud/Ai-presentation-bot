@@ -11,10 +11,13 @@ from ai.validator import RequirementsValidator
 from ai.design_intent import parse_design_intent, DesignIntent
 from ai.design_intelligence import DesignIntelligence
 from ai.slide_design_schema import PresentationDesignPlan
+from ai.visual_design_planner import VisualDesignPlanner, VisualDesignSpec
+from ai.visual_spec_bridge import visual_spec_to_design_plan
 from config.settings import settings
 from presentation.renderer import PresentationRenderer, RendererError
 from images.pipeline import ImagePipeline
 from images.intent import ImageIntent
+from images.asset_pipeline import ImageAssetPipeline, AssetResolutionResult
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -23,6 +26,7 @@ _planner = PresentationPlanner()
 _extractor = RequirementsExtractor()
 _validator = RequirementsValidator()
 _design_intelligence = DesignIntelligence()
+_visual_design_planner = VisualDesignPlanner()
 
 MIN_TOPIC_LEN = 3
 
@@ -180,28 +184,91 @@ async def handle_topic(message: Message) -> None:
         except Exception as e:
             logger.warning(f"Image fetching pipeline failed: {e}")
 
-    # --- Step 5b: Gemini Design Intelligence ---
-    # image_index = slides for which a real image was resolved.
-    # DesignIntelligence receives this so it knows which slides have actual
-    # images and can set appropriate image_treatment / image_position.
-    # analyse() NEVER raises — returns safe defaults on any failure.
+    # --- Step 5b: Gemini Visual Design Planner (Creative Director) ---
+    # VisualDesignPlanner asks Gemini to design every slide's visual layout:
+    # coordinates, sizes, colors, fonts, backgrounds, and asset prompts.
+    # plan_sync() NEVER raises — returns safe defaults on any failure.
+    visual_spec: VisualDesignSpec = await _visual_design_planner.plan(
+        plan=plan,
+        design_intent=reqs.design_intent,
+    )
+    logger.info(
+        "VisualDesignPlanner completed: topic=%r slides=%d "
+        "gemini=%s fallback=%s direction=%r",
+        topic,
+        len(visual_spec.slides),
+        visual_spec.generated_by_gemini,
+        visual_spec.fallback_used,
+        visual_spec.presentation.visual_direction[:80]
+        if visual_spec.presentation.visual_direction else "",
+    )
+
+    # --- Step 5c: Visual asset generation ---
+    # ImageAssetPipeline resolves all assets defined in visual_spec.
+    # Per-asset fallback: generated → cache → solid color placeholder.
+    # ONE asset failure never stops the pipeline.
+    asset_result: AssetResolutionResult = await _resolve_visual_assets(visual_spec)
+
+    # Merge resolved visual assets into image_paths (IMAGE_TEXT slides only).
+    # SpecRenderer.inject_assets() is non-destructive: never overwrites existing paths.
+    try:
+        from presentation.spec_renderer import SpecRenderer
+        image_paths = SpecRenderer(
+            visual_spec=visual_spec,
+            resolved_assets=asset_result.resolved,
+        ).inject_assets(plan.slides, image_paths)
+    except Exception as _sr_exc:
+        logger.error("SpecRenderer.inject_assets failed (non-fatal): %s", _sr_exc)
+
+    # --- Step 5d: Gemini Design Intelligence (archetype dispatch layer) ---
+    # DesignIntelligence receives image_index so it knows which slides have
+    # real images. analyse() NEVER raises — returns safe defaults on failure.
     image_index: set[int] = set(image_paths.keys())
     design_plan: PresentationDesignPlan = await _design_intelligence.analyse(
         plan=plan,
-        design_intent=reqs.design_intent,   # None if user stated no preferences
+        design_intent=reqs.design_intent,
         image_index=image_index,
     )
     logger.info(
-        "DesignIntelligence completed: topic=%r directives=%d "
-        "design_intent=%s rationale=%r",
+        "DesignIntelligence completed: topic=%r directives=%d rationale=%r",
         topic,
         len(design_plan.directives),
-        reqs.design_intent,
         design_plan.design_rationale[:80] if design_plan.design_rationale else "",
     )
-    # design_plan flows into PresentationRenderer so directive_for() is
-    # available to Phase 4 (CompositionSelector).  renderer.py accepts None
-    # safely — Gemini failure never reaches the user as a crash.
+
+    # --- Step 5e: Merge VisualDesignSpec → PresentationDesignPlan ---
+    # visual_spec (Gemini Creative Director) мазмұнын design_plan-ға merge жасайды:
+    #   composition_type  → archetype        (CompositionSelector → layout handler)
+    #   background.color  → background_override   (builder.prepare_slide → bg)
+    #   elements.alignment→ text_alignment
+    #   elements.width    → title_width_ratio
+    #   margin_top        → spacing
+    #   heading_font/body → global_font_heading/body
+    # Priority: USER CONSTRAINT > visual_spec > design_plan > renderer defaults
+    try:
+        design_plan = visual_spec_to_design_plan(
+            visual_spec=visual_spec,
+            plan=plan,
+            existing_design_plan=design_plan,
+        )
+        logger.info(
+            "visual_spec_bridge: merged → design_plan directives=%d "
+            "font_heading=%r font_body=%r",
+            len(design_plan.directives),
+            design_plan.global_font_heading,
+            design_plan.global_font_body,
+        )
+    except Exception as _bridge_exc:
+        logger.error(
+            "visual_spec_bridge failed (non-fatal): %s — "
+            "continuing with DesignIntelligence plan only",
+            _bridge_exc,
+        )
+    logger.info(
+        "Composition rendering started: topic=%r slides=%d",
+        topic,
+        len(plan.slides),
+    )
     try:
         renderer = PresentationRenderer(
             plan,
@@ -211,6 +278,7 @@ async def handle_topic(message: Message) -> None:
         )
         renderer.render(image_paths=image_paths)
         renderer.save(str(output_path))
+        logger.info("Presentation rendering completed: topic=%r path=%s", topic, output_path)
     except RendererError as exc:
         logger.error(
             "RendererError for topic=%r user_id=%s: %s",
@@ -368,3 +436,79 @@ async def _fetch_image_paths_for_slides(slides, topic: str, pipeline) -> dict[in
             )
             continue
     return image_paths
+
+
+async def _resolve_visual_assets(visual_spec: "VisualDesignSpec") -> "AssetResolutionResult":
+    """
+    Run ImageAssetPipeline on visual_spec assets.
+
+    Per-asset fallback chain (inside ImageAssetPipeline):
+      generated image → cache → solid-color placeholder
+
+    ONE asset failure never stops the pipeline — always returns a result.
+    """
+    try:
+        asset_pipeline = ImageAssetPipeline()
+        return await asset_pipeline.resolve_all(visual_spec)
+    except Exception as exc:
+        logger.error(
+            "_resolve_visual_assets: unexpected error — returning empty result: %s", exc
+        )
+        from images.asset_pipeline import AssetResolutionResult
+        return AssetResolutionResult()
+
+
+def _merge_asset_paths(
+    slides,
+    visual_spec: "VisualDesignSpec",
+    asset_result: "AssetResolutionResult",
+    existing_image_paths: dict[int, str],
+) -> dict[int, str]:
+    """
+    Merge resolved visual assets into existing image_paths for IMAGE_TEXT slides.
+
+    For each IMAGE_TEXT slide that has no image_path yet, check if
+    visual_spec has a hero_visual or illustration asset for that slide
+    that was successfully resolved by ImageAssetPipeline.
+
+    Non-IMAGE_TEXT slide assets (backgrounds, decorations) are intentionally
+    NOT merged here — they remain in visual_spec for the composition engine.
+
+    Returns updated image_paths dict.
+    """
+    merged = dict(existing_image_paths)
+
+    # Build a lookup: slide_index → list of resolved asset paths for that slide
+    spec_slides = getattr(visual_spec, "slides", [])
+    for slide_spec in spec_slides:
+        slide_index = getattr(slide_spec, "slide_index", None)
+        if slide_index is None:
+            continue
+
+        # Only inject into IMAGE_TEXT slides that have no image yet
+        matching_slide = next(
+            (s for s in slides if s.index == slide_index
+             and s.layout == SlideLayout.IMAGE_TEXT),
+            None,
+        )
+        if matching_slide is None:
+            continue
+        if slide_index in merged:
+            continue  # already has an image from _fetch_image_paths_for_slides
+
+        # Look for a content/hero asset for this slide
+        for asset in getattr(slide_spec, "assets", []):
+            asset_id = getattr(asset, "id", None)
+            purpose = getattr(asset, "purpose", "")
+            if purpose in ("hero_visual", "illustration", "content") and asset_id:
+                resolved_path = asset_result.resolved.get(asset_id)
+                if resolved_path is not None:
+                    merged[slide_index] = str(resolved_path)
+                    logger.info(
+                        "_merge_asset_paths: injected asset %r → IMAGE_TEXT slide %d",
+                        asset_id,
+                        slide_index,
+                    )
+                    break  # one image per slide
+
+    return merged
