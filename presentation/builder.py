@@ -108,6 +108,7 @@ class PPTXBuilder:
         self._prs: Presentation | None = None
         self._selector = VariantSelector()
         self._current_directive = None   # set by prepare_slide, read by _add_slide_title
+        self._current_slide_spec = None  # set by renderer before handler call (Phase 5)
         self.create_presentation()
 
     # ------------------------------------------------------------------
@@ -221,6 +222,9 @@ class PPTXBuilder:
         # Store directive so _add_slide_title can read Gemini overrides
         # without changing every _render_* method signature.
         self._current_directive = directive
+        # Reset per-slide spec; renderer supplies the real value after this
+        # call returns (Phase 5).  None → legacy _render_* path is safe.
+        self._current_slide_spec = None
 
         return pptx_slide, variant, resolved_image_path
 

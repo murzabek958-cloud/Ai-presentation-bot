@@ -104,6 +104,10 @@ if TYPE_CHECKING:
         CompositionSelector    as _CompositionSelectorT,
         CompositionResult      as _CompositionResultT,
     )
+    from ai.visual_design_planner import (
+        VisualDesignSpec  as _VisualDesignSpecT,
+        SlideDesignSpec   as _SlideDesignSpecT,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +156,70 @@ def _resolve_theme(
         theme.background,
     )
     return theme
+
+
+def _apply_global_font_override(
+    theme: Theme,
+    design_intent: DesignIntent | None,
+    design_plan: object,
+) -> Theme:
+    """
+    Apply PresentationDesignPlan.global_font_* to *theme* when DesignIntent
+    does not already provide an explicit font override.
+
+    Priority:
+        DesignIntent.font_heading  >  design_plan.global_font_heading  >  theme default
+        DesignIntent.font_body     >  design_plan.global_font_body     >  theme default
+
+    DesignIntent fonts have already been baked into *theme* by DesignResolver,
+    so we only need to check whether design_plan carries a global font that was
+    not covered by DesignIntent.
+
+    *design_plan* is accepted as ``object`` so this helper can be called
+    before the type guard; it safely returns *theme* unchanged when
+    design_plan is None or lacks the expected attributes.
+    """
+    if design_plan is None:
+        return theme
+
+    intent_font_heading: str | None = (
+        design_intent.font_heading if design_intent is not None else None
+    )
+    intent_font_body: str | None = (
+        design_intent.font_body if design_intent is not None else None
+    )
+
+    plan_font_heading: str | None = getattr(design_plan, "global_font_heading", None)
+    plan_font_body: str | None    = getattr(design_plan, "global_font_body", None)
+
+    # Only override when DesignIntent did NOT already set the font.
+    new_heading = (
+        theme.font_heading
+        if intent_font_heading or not plan_font_heading
+        else plan_font_heading
+    )
+    new_body = (
+        theme.font_body
+        if intent_font_body or not plan_font_body
+        else plan_font_body
+    )
+
+    if new_heading == theme.font_heading and new_body == theme.font_body:
+        return theme
+
+    updated = theme.model_copy(update={
+        "font_heading": new_heading,
+        "font_body":    new_body,
+    })
+    logger.info(
+        "Global font override applied: font_heading=%r→%r font_body=%r→%r "
+        "(intent_heading=%r intent_body=%r plan_heading=%r plan_body=%r)",
+        theme.font_heading, new_heading,
+        theme.font_body,    new_body,
+        intent_font_heading, intent_font_body,
+        plan_font_heading,   plan_font_body,
+    )
+    return updated
 
 
 def _validate_design_plan_safe(
@@ -226,6 +294,7 @@ class PresentationRenderer:
         style_is_explicit: bool = False,
         design_intent: DesignIntent | None = None,
         design_plan: "_PresentationDesignPlanT | None" = None,
+        visual_spec: "_VisualDesignSpecT | None" = None,
     ) -> None:
         if not plan.slides:
             raise RendererError("PresentationPlan has no slides.")
@@ -239,6 +308,21 @@ class PresentationRenderer:
         # ── Phase 3: store validated design_plan ──────────────────────────
         self._design_plan: "_PresentationDesignPlanT | None" = (
             _validate_design_plan_safe(design_plan)
+        )
+
+        # ── Phase 5: store visual_spec and build slide-level index ───────
+        self._visual_spec: "_VisualDesignSpecT | None" = visual_spec
+        self._slide_spec_index: "dict[int, _SlideDesignSpecT]" = {}
+        if visual_spec is not None:
+            for slide_spec in visual_spec.slides:
+                self._slide_spec_index[slide_spec.slide_index] = slide_spec
+
+        # ── Phase 5 (global font fix): apply design_plan global fonts ─────
+        # Priority: DesignIntent.font_* > design_plan.global_font_* > base theme.
+        # DesignIntent fonts were already baked into self._theme by _resolve_theme();
+        # this step fills in any remaining gap from design_plan.global_font_*.
+        self._theme = _apply_global_font_override(
+            self._theme, design_intent, self._design_plan
         )
 
         # O(1) directive lookup: slide_index → SlideDesignDirective
@@ -453,6 +537,14 @@ class PresentationRenderer:
                 slide.index,
             )
             return
+
+        # ── Phase 5: inject per-slide Gemini spec into builder ────────────
+        # prepare_slide() already reset builder._current_slide_spec to None.
+        # We set it here (after AGENDA early-return) so concrete IMPLEMENTED
+        # handlers can read it via builder._current_slide_spec.
+        # .get() returns None when visual_spec has no entry for this slide —
+        # PLACEHOLDER handlers and _dispatch_render() ignore None safely.
+        builder._current_slide_spec = self._slide_spec_index.get(slide.index)
 
         # ── Step 4a: IMPLEMENTED handler → concrete composition ───────────
         if result.status == HandlerStatus.IMPLEMENTED:

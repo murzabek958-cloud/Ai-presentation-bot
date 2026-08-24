@@ -7,6 +7,7 @@ from aiogram.enums import ParseMode
 
 from config.settings import settings
 from bot.handlers import router
+from presentation.compositions import register_all_handlers
 
 
 def configure_logging(debug: bool) -> None:
@@ -19,6 +20,10 @@ def configure_logging(debug: bool) -> None:
 async def main() -> None:
     configure_logging(settings.debug)
     logger = logging.getLogger(__name__)
+
+    # Register Phase 5 concrete composition handlers once at startup.
+    # Tests do not call main(), so PLACEHOLDER registry behavior is preserved.
+    register_all_handlers()
 
     bot = Bot(
         token=settings.telegram_bot_token,
