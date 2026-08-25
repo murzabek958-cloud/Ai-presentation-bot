@@ -30,8 +30,8 @@ primary_color    : str | None   — '#RRGGBB', overrides palette primary
 accent_color     : str | None   — '#RRGGBB', overrides palette accent
 font_heading     : str | None   — typeface name, overrides font resolution
 font_body        : str | None   — typeface name, overrides font resolution
-style_hint       : str | None   — free-form visual style hint (e.g. "modern",
-                                  "elegant", "dark"), lower priority than explicit colors
+style_hint       : str | None   — "academic"|"modern"|"minimal", treated as
+                                  a *hint* (lower priority than explicit colors)
 density_hint     : str | None   — "spacious"|"normal"|"dense"
 
 All fields default to None — meaning "user said nothing about this".
@@ -110,40 +110,29 @@ _COLOR_NAMES: dict[str, str] = {
 _STYLE_HINTS: dict[str, str] = {
     # English
     "academic":    "academic",
-    "formal":      "formal",
-    "scientific":  "scientific",
+    "formal":      "academic",
+    "scientific":  "academic",
     "modern":      "modern",
-    "contemporary": "contemporary",
-    "clean":       "clean",
+    "contemporary": "modern",
+    "clean":       "modern",
     "minimal":     "minimal",
-    "minimalist":  "minimalist",
-    "minimalistic": "minimalistic",
-    "simple":      "simple",
-    "elegant":     "elegant",
-    "bold":        "bold",
-    "creative":    "creative",
-    "professional": "professional",
-    "vibrant":     "vibrant",
-    "dark":        "dark",
-    "light":       "light",
-    "colorful":    "colorful",
+    "minimalist":  "minimal",
+    "minimalistic": "minimal",
+    "simple":      "minimal",
     # Russian
     "академический": "academic",
     "академичный":   "academic",
-    "научный":       "scientific",
+    "научный":       "academic",
     "современный":   "modern",
     "минимальный":   "minimal",
-    "минималистичный": "minimalist",
-    "минималистский":  "minimalist",
-    "элегантный":    "elegant",
-    "яркий":         "vibrant",
+    "минималистичный": "minimal",
+    "минималистский":  "minimal",
     # Kazakh
     "академиялық":   "academic",
-    "ғылыми":        "scientific",
+    "ғылыми":        "academic",
     "заманауи":      "modern",
-    "минималистік":  "minimalist",
-    "қарапайым":     "simple",
-    "шығармашылық":  "creative",
+    "минималистік":  "minimal",
+    "қарапайым":     "minimal",
 }
 
 # ── Density hint vocabulary ───────────────────────────────────────────────

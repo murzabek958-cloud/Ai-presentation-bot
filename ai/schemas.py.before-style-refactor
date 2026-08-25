@@ -52,7 +52,7 @@ class PresentationRequirements(BaseModel):
     """
     slide_count: int | None = Field(None, ge=1, le=50)
     language: str | None = Field(None, pattern="^(kk|ru|en)$")
-    style: str | None = None
+    style: str | None = Field(None, pattern="^(academic|modern|minimal)$")
 
     require_conclusion: bool = False
     require_statistics: bool = False
@@ -73,7 +73,7 @@ class PresentationRequirements(BaseModel):
 
 class PresentationPlan(BaseModel):
     topic: str = Field(..., min_length=1)
-    style: str = Field(default="")
+    style: str = Field(..., pattern="^(academic|modern|minimal)$")
     slide_count: int = Field(..., ge=1)
     slides: list[SlideData] = Field(..., min_length=1)
     metadata: PlanMetadata

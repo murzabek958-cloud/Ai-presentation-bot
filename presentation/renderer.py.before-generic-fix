@@ -72,13 +72,6 @@ from presentation.styles import Theme
 from presentation.builder import PPTXBuilder
 from presentation.layouts import get_layout_spec
 from presentation.design_resolver import DesignResolver
-try:
-    from ai.visual_spec_bridge import apply_visual_spec_to_theme as _apply_visual_spec_to_theme
-    _VISUAL_SPEC_BRIDGE_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _VISUAL_SPEC_BRIDGE_AVAILABLE = False
-    def _apply_visual_spec_to_theme(theme, visual_spec):  # type: ignore[misc]
-        return theme
 from presentation.design_spec import DesignSpec
 
 # ── Design-schema imports (guarded for minimal test environments) ──────────
@@ -164,6 +157,69 @@ def _resolve_theme(
     )
     return theme
 
+
+def _apply_global_font_override(
+    theme: Theme,
+    design_intent: DesignIntent | None,
+    design_plan: object,
+) -> Theme:
+    """
+    Apply PresentationDesignPlan.global_font_* to *theme* when DesignIntent
+    does not already provide an explicit font override.
+
+    Priority:
+        DesignIntent.font_heading  >  design_plan.global_font_heading  >  theme default
+        DesignIntent.font_body     >  design_plan.global_font_body     >  theme default
+
+    DesignIntent fonts have already been baked into *theme* by DesignResolver,
+    so we only need to check whether design_plan carries a global font that was
+    not covered by DesignIntent.
+
+    *design_plan* is accepted as ``object`` so this helper can be called
+    before the type guard; it safely returns *theme* unchanged when
+    design_plan is None or lacks the expected attributes.
+    """
+    if design_plan is None:
+        return theme
+
+    intent_font_heading: str | None = (
+        design_intent.font_heading if design_intent is not None else None
+    )
+    intent_font_body: str | None = (
+        design_intent.font_body if design_intent is not None else None
+    )
+
+    plan_font_heading: str | None = getattr(design_plan, "global_font_heading", None)
+    plan_font_body: str | None    = getattr(design_plan, "global_font_body", None)
+
+    # Only override when DesignIntent did NOT already set the font.
+    new_heading = (
+        theme.font_heading
+        if intent_font_heading or not plan_font_heading
+        else plan_font_heading
+    )
+    new_body = (
+        theme.font_body
+        if intent_font_body or not plan_font_body
+        else plan_font_body
+    )
+
+    if new_heading == theme.font_heading and new_body == theme.font_body:
+        return theme
+
+    updated = theme.model_copy(update={
+        "font_heading": new_heading,
+        "font_body":    new_body,
+    })
+    logger.info(
+        "Global font override applied: font_heading=%r→%r font_body=%r→%r "
+        "(intent_heading=%r intent_body=%r plan_heading=%r plan_body=%r)",
+        theme.font_heading, new_heading,
+        theme.font_body,    new_body,
+        intent_font_heading, intent_font_body,
+        plan_font_heading,   plan_font_body,
+    )
+    return updated
 
 
 def _validate_design_plan_safe(
@@ -260,10 +316,14 @@ class PresentationRenderer:
         if visual_spec is not None:
             for slide_spec in visual_spec.slides:
                 self._slide_spec_index[slide_spec.slide_index] = slide_spec
-            # Apply Gemini VisualDesignSpec fonts/colors to theme.
-            # Priority: DesignIntent (already in theme) > VisualDesignSpec > palette defaults.
-            # We only update fields that DesignIntent did NOT already set.
-            self._theme = _apply_visual_spec_to_theme(self._theme, visual_spec)
+
+        # ── Phase 5 (global font fix): apply design_plan global fonts ─────
+        # Priority: DesignIntent.font_* > design_plan.global_font_* > base theme.
+        # DesignIntent fonts were already baked into self._theme by _resolve_theme();
+        # this step fills in any remaining gap from design_plan.global_font_*.
+        self._theme = _apply_global_font_override(
+            self._theme, design_intent, self._design_plan
+        )
 
         # O(1) directive lookup: slide_index → SlideDesignDirective
         self._directive_index: dict[int, "_SlideDesignDirectiveT"] = {}
@@ -510,14 +570,51 @@ class PresentationRenderer:
                 )
                 # Fall through to _dispatch_render() below.
 
-        # ── Step 4b: PLACEHOLDER / PENDING → existing _render_* pipeline ─
-        # Also used as fallback when IMPLEMENTED handler raises.
+        # ── Step 4b: generic ElementSpec renderer OR legacy _dispatch_render ─
+        # Priority:
+        #   Gemini spec with elements → generic renderer (Gemini is source of truth)
+        #   No spec / empty elements  → builder._dispatch_render() (legacy fallback)
+        slide_spec = self._slide_spec_index.get(slide.index)
+        has_gemini_elements = (
+            slide_spec is not None
+            and bool(getattr(slide_spec, "elements", None))
+        )
+
+        if has_gemini_elements:
+            try:
+                from presentation.compositions.hero import render_elements_from_spec
+                logger.debug(
+                    "CompositionHandler %s: slide index=%d archetype=%s "
+                    "→ render_elements_from_spec (Gemini spec, %d elements)",
+                    result.status.value,
+                    slide.index,
+                    result.archetype.value,
+                    len(slide_spec.elements),
+                )
+                rendered = render_elements_from_spec(
+                    pptx_slide, slide, slide_spec, builder,
+                    image_path=str(resolved_img) if resolved_img else None,
+                )
+                if rendered:
+                    return
+                # spec had elements but none rendered — fall through to legacy
+                logger.debug(
+                    "render_elements_from_spec returned False for slide "                    "index=%d — falling through to legacy",
+                    slide.index,
+                )
+            except Exception as exc:
+                logger.error(
+                    "render_elements_from_spec raised for slide index=%d "                    "archetype=%s: %s — falling back to _dispatch_render()",
+                    slide.index, result.archetype.value, exc, exc_info=True,
+                )
+
         logger.debug(
             "CompositionHandler %s: slide index=%d archetype=%s "
-            "→ builder._dispatch_render()",
+            "→ builder._dispatch_render() (legacy%s)",
             result.status.value,
             slide.index,
             result.archetype.value,
+            " — no Gemini elements" if not has_gemini_elements else " — fallback",
         )
         builder._dispatch_render(pptx_slide, slide, variant, resolved_img)
 

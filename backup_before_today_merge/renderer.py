@@ -72,13 +72,6 @@ from presentation.styles import Theme
 from presentation.builder import PPTXBuilder
 from presentation.layouts import get_layout_spec
 from presentation.design_resolver import DesignResolver
-try:
-    from ai.visual_spec_bridge import apply_visual_spec_to_theme as _apply_visual_spec_to_theme
-    _VISUAL_SPEC_BRIDGE_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _VISUAL_SPEC_BRIDGE_AVAILABLE = False
-    def _apply_visual_spec_to_theme(theme, visual_spec):  # type: ignore[misc]
-        return theme
 from presentation.design_spec import DesignSpec
 
 # ── Design-schema imports (guarded for minimal test environments) ──────────
@@ -110,10 +103,6 @@ if TYPE_CHECKING:
     from presentation.composition_selector import (
         CompositionSelector    as _CompositionSelectorT,
         CompositionResult      as _CompositionResultT,
-    )
-    from ai.visual_design_planner import (
-        VisualDesignSpec  as _VisualDesignSpecT,
-        SlideDesignSpec   as _SlideDesignSpecT,
     )
 
 logger = logging.getLogger(__name__)
@@ -163,7 +152,6 @@ def _resolve_theme(
         theme.background,
     )
     return theme
-
 
 
 def _validate_design_plan_safe(
@@ -238,7 +226,6 @@ class PresentationRenderer:
         style_is_explicit: bool = False,
         design_intent: DesignIntent | None = None,
         design_plan: "_PresentationDesignPlanT | None" = None,
-        visual_spec: "_VisualDesignSpecT | None" = None,
     ) -> None:
         if not plan.slides:
             raise RendererError("PresentationPlan has no slides.")
@@ -253,17 +240,6 @@ class PresentationRenderer:
         self._design_plan: "_PresentationDesignPlanT | None" = (
             _validate_design_plan_safe(design_plan)
         )
-
-        # ── Phase 5: store visual_spec and build slide-level index ───────
-        self._visual_spec: "_VisualDesignSpecT | None" = visual_spec
-        self._slide_spec_index: "dict[int, _SlideDesignSpecT]" = {}
-        if visual_spec is not None:
-            for slide_spec in visual_spec.slides:
-                self._slide_spec_index[slide_spec.slide_index] = slide_spec
-            # Apply Gemini VisualDesignSpec fonts/colors to theme.
-            # Priority: DesignIntent (already in theme) > VisualDesignSpec > palette defaults.
-            # We only update fields that DesignIntent did NOT already set.
-            self._theme = _apply_visual_spec_to_theme(self._theme, visual_spec)
 
         # O(1) directive lookup: slide_index → SlideDesignDirective
         self._directive_index: dict[int, "_SlideDesignDirectiveT"] = {}
@@ -477,14 +453,6 @@ class PresentationRenderer:
                 slide.index,
             )
             return
-
-        # ── Phase 5: inject per-slide Gemini spec into builder ────────────
-        # prepare_slide() already reset builder._current_slide_spec to None.
-        # We set it here (after AGENDA early-return) so concrete IMPLEMENTED
-        # handlers can read it via builder._current_slide_spec.
-        # .get() returns None when visual_spec has no entry for this slide —
-        # PLACEHOLDER handlers and _dispatch_render() ignore None safely.
-        builder._current_slide_spec = self._slide_spec_index.get(slide.index)
 
         # ── Step 4a: IMPLEMENTED handler → concrete composition ───────────
         if result.status == HandlerStatus.IMPLEMENTED:

@@ -283,17 +283,6 @@ def render_elements_from_spec(
     # Render in z_index order (painter's algorithm: background first)
     for el in _all_elements_sorted(spec):
         el_type = getattr(el, "type", "")
-        slide_index = getattr(spec, "slide_index", "?")
-        logger.info(
-            "RENDER START: slide=%s type=%r x=%s y=%s w=%s h=%s z=%s",
-            slide_index,
-            el_type,
-            getattr(el, "x", None),
-            getattr(el, "y", None),
-            getattr(el, "w", None),
-            getattr(el, "h", None),
-            getattr(el, "z_index", None),
-        )
         try:
             if el_type in ("shape", "divider"):
                 _render_shape_element(pptx_slide, el, t)
@@ -357,11 +346,10 @@ def render_elements_from_spec(
                 )
 
         except Exception as exc:
-            logger.exception(
-                "RENDER FAILED: slide=%s type=%r error=%s",
-                slide_index,
-                el_type,
-                exc,
+            logger.warning(
+                "render_elements_from_spec: element type=%r raised: %s "
+                "— skipping element (slide_index=%d)",
+                el_type, exc, getattr(spec, "slide_index", "?"),
             )
 
     logger.debug(

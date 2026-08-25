@@ -230,8 +230,7 @@ def _build_user_prompt(
     # ── Presentation context ──────────────────────────────────────────────
     lines.append("PRESENTATION:")
     lines.append(f"  Topic: {plan.topic}")
-    if plan.style:
-        lines.append(f"  Style hint (loose suggestion only — you decide the visual direction): {plan.style}")
+    lines.append(f"  Style: {plan.style}")
     lines.append(f"  Slide count: {plan.slide_count}")
     lines.append(f"  Language: {plan.metadata.language}")
     lines.append("")

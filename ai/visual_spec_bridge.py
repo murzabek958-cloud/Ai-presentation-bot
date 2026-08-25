@@ -460,3 +460,74 @@ def visual_spec_to_design_plan(
         g_spacing,
     )
     return merged_plan
+
+
+def apply_visual_spec_to_theme(
+    theme: Any,
+    visual_spec: Any,
+) -> Any:
+    """
+    Apply VisualDesignSpec.presentation fonts and colors to a resolved Theme.
+
+    Gemini-дің VisualDesignSpec-і presentation-level font/color анықтайды.
+    Бұл мәндер DesignResolver арқылы Theme-ге жетпейді (DesignResolver тек
+    DesignIntent-ті қолданады).  Осы helper renderer-де Theme-ді patch
+    жасауға арналған.
+
+    Priority: VisualDesignSpec.presentation > existing theme defaults
+    User DesignIntent > бәрінен жоғары (DesignResolver оны бұрын енгізген).
+
+    Parameters
+    ----------
+    theme       : Resolved Theme (from DesignResolver).
+    visual_spec : VisualDesignPlanner-дің VisualDesignSpec шығарымы.
+
+    Returns
+    -------
+    Updated Theme with Gemini fonts/colors applied, or original if nothing to apply.
+    """
+    if visual_spec is None:
+        return theme
+
+    presentation = _get(visual_spec, "presentation")
+    if presentation is None:
+        return theme
+
+    heading_font = _get(presentation, "heading_font")
+    body_font    = _get(presentation, "body_font")
+    primary      = _get(presentation, "primary_color")
+    accent       = _get(presentation, "accent_color")
+    background   = _get(presentation, "background_color")
+
+    updates: dict[str, Any] = {}
+
+    if heading_font and isinstance(heading_font, str) and heading_font.strip():
+        updates["font_heading"] = heading_font.strip()
+
+    if body_font and isinstance(body_font, str) and body_font.strip():
+        updates["font_body"] = body_font.strip()
+
+    if primary and isinstance(primary, str) and primary.startswith("#"):
+        updates["primary"] = primary
+
+    if accent and isinstance(accent, str) and accent.startswith("#"):
+        updates["accent"] = accent
+
+    if background and isinstance(background, str) and background.startswith("#"):
+        updates["background"] = background
+
+    if not updates:
+        return theme
+
+    try:
+        updated = theme.model_copy(update=updates)
+        logger.info(
+            "visual_spec_bridge: Theme updated from VisualDesignSpec — %s",
+            ", ".join(f"{k}={v!r}" for k, v in updates.items()),
+        )
+        return updated
+    except Exception as exc:
+        logger.warning(
+            "visual_spec_bridge: apply_visual_spec_to_theme failed: %s", exc
+        )
+        return theme

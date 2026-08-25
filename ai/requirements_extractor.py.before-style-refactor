@@ -29,7 +29,7 @@ Return a single JSON object with these fields (all optional — use null if not 
 {
   "slide_count":        integer or null,
   "language":           "kk" | "ru" | "en" | null,
-  "style":              string or null,  // free-form style hint from user
+  "style":              "academic" | "modern" | "minimal" | null,
   "require_conclusion": true | false,
   "require_statistics": true | false,
   "require_sources":    true | false,
@@ -44,7 +44,9 @@ Language detection rules:
 - "english", "in english", "английский"            → "en"
 
 Style detection rules:
-- Capture any explicit style the user mentions as a free-form string hint.
+- "академиялық", "академический", "academic"       → "academic"
+- "заманауи", "современный", "modern"              → "modern"
+- "минималды", "минималистичный", "minimal"        → "minimal"
 
 Slide count detection:
 - "8 слайд", "10 слайдтан тұрсын", "5 slide", "сделай 12 слайдов" → integer

@@ -156,7 +156,7 @@ class SlideDesignSpec(BaseModel):
 class PresentationVisualDirection(BaseModel):
     """Presentation-level visual strategy."""
     visual_direction: str = ""
-    style: str = ""
+    style: str = "modern"
     color_strategy: str = ""
     typography_strategy: str = ""
     primary_color: str = "#1E3A5F"
@@ -334,7 +334,7 @@ def _safe_design_spec(
         accent   = design_intent.accent_color    or accent
 
     direction = PresentationVisualDirection(
-        style="",  # no preset — Gemini decides
+        style=plan.style,
         primary_color=primary,
         accent_color=accent,
         background_color=bg_color,
@@ -367,7 +367,7 @@ You must return a JSON object matching this schema exactly:
 {
   "presentation": {
     "visual_direction": "<2-3 sentence design concept>",
-    "style": "<your chosen visual style description>",  // free string, e.g. "bold dark", "pastel minimal", "vibrant tech"
+    "style": "<academic|modern|minimal>",
     "color_strategy": "<describe palette rationale>",
     "typography_strategy": "<describe font pairing rationale>",
     "primary_color": "#RRGGBB",
@@ -480,7 +480,7 @@ DESIGN PRINCIPLES:
 9. Font recommendations for safe rendering:
    Professional: Calibri, Arial, Helvetica
    Modern: Montserrat, Open Sans
-   Traditional/serif: Georgia, Times New Roman
+   Academic: Georgia, Times New Roman
 
 10. Return ONLY valid JSON. No markdown, no code fences, no prose.
 """
@@ -495,8 +495,7 @@ def _build_user_prompt(
 
     lines.append("PRESENTATION TO DESIGN:")
     lines.append(f"  Topic: {plan.topic}")
-    if plan.style:
-        lines.append(f"  Style hint: {plan.style}  (treat as a loose suggestion, not a constraint)")
+    lines.append(f"  Style: {plan.style}")
     lines.append(f"  Slide count: {plan.slide_count}")
     lines.append(f"  Language: {plan.metadata.language}")
     lines.append("")
@@ -622,7 +621,7 @@ def _parse_response(
             presentation_data = data.get("presentation", {})
             direction = PresentationVisualDirection.model_validate(presentation_data)
         except Exception:
-            direction = PresentationVisualDirection(style="")
+            direction = PresentationVisualDirection(style=plan.style)
 
         slides: list[SlideDesignSpec] = []
         for raw_slide in data.get("slides", []):

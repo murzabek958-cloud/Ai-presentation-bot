@@ -4,6 +4,25 @@ No API calls, no Pydantic imports — pure prompt text.
 """
 
 # ---------------------------------------------------------------------------
+# Style descriptions
+# ---------------------------------------------------------------------------
+
+STYLE_DESCRIPTIONS: dict[str, str] = {
+    "academic": (
+        "Formal academic style. Structured, informative, and citation-friendly. "
+        "Suitable for university assignments and scientific presentations."
+    ),
+    "modern": (
+        "Clean and contemporary style. Bold headings, concise bullet points, "
+        "and visual elements. Suitable for conferences and tech topics."
+    ),
+    "minimal": (
+        "Minimalist style. Maximum whitespace, short phrases, strong typography. "
+        "Suitable for design-focused or concept-driven presentations."
+    ),
+}
+
+# ---------------------------------------------------------------------------
 # Layout descriptions
 # ---------------------------------------------------------------------------
 
@@ -26,10 +45,10 @@ LAYOUT_DESCRIPTIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are an expert presentation planner.
+You are an expert academic presentation planner for university students.
 
 Your task is to analyse a topic and produce a structured presentation plan \
-in strict JSON format. You will be given a topic, slide count, and language.
+in strict JSON format. You will be given a topic, slide count, language, and style.
 
 RULES:
 - Return ONLY a valid JSON object. No markdown, no code fences, no extra text.
@@ -47,7 +66,7 @@ a data topic suits "statistics" or "chart", a comparative topic suits "compariso
 
 {
   "topic": string,
-  "style": string,
+  "style": "academic" | "modern" | "minimal",
   "slide_count": integer,
   "slides": [
     {
@@ -90,7 +109,7 @@ def build_user_prompt(
     topic: str,
     slide_count: int,
     language: str,
-    style: str = "",
+    style: str,
     require_conclusion: bool = False,
     require_statistics: bool = False,
     require_sources: bool = False,
@@ -98,16 +117,16 @@ def build_user_prompt(
     max_text_per_slide: bool = False,
     extra_instructions: str = "",
 ) -> str:
+    style_desc = STYLE_DESCRIPTIONS.get(style, style)
+
     lines = [
         "Create a presentation plan for the following topic.",
         "",
         f"Topic: {topic}",
         f"Number of slides: {slide_count}",
         f"Language: {language}",
+        f"Style: {style} — {style_desc}",
     ]
-
-    if style:
-        lines.append(f"Style hint: {style}")
 
     # --- Collect mandatory user requirements ---
     requirements: list[str] = []

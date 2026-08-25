@@ -623,19 +623,11 @@ class TopicClassifier:
 def palette_to_theme(palette: Palette, base_name: str | None = None) -> Theme:
     """
     Convert a Palette into the existing Theme API without modifying Theme itself.
-    Font pairing is chosen by palette mood family.
+
+    Fonts are intentionally left as neutral defaults ("Calibri") because the
+    actual font choice belongs to Gemini's VisualDesignSpec.  DesignSpec.to_theme()
+    overrides these defaults with whatever Gemini specified.
     """
-    # Decide font pair based on palette name (deterministic)
-    warm_palettes = {"history", "agriculture", "nature"}
-    tech_palettes = {"technology", "technology_business", "space"}
-
-    if palette.name in warm_palettes:
-        font_h, font_b = "Georgia", "Calibri"
-    elif palette.name in tech_palettes:
-        font_h, font_b = "Arial", "Arial"
-    else:
-        font_h, font_b = "Cambria", "Calibri"
-
     name = base_name or palette.name
 
     return Theme(
@@ -646,8 +638,8 @@ def palette_to_theme(palette: Palette, base_name: str | None = None) -> Theme:
         background=palette.background,
         text_dark=palette.text_primary,
         text_light=palette.text_on_dark,
-        font_heading=font_h,
-        font_body=font_b,
+        font_heading="Calibri",   # Gemini overrides this via DesignSpec.to_theme()
+        font_body="Calibri",      # Gemini overrides this via DesignSpec.to_theme()
     )
 
 

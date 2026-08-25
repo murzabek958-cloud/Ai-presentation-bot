@@ -23,7 +23,7 @@ class PresentationPlanner:
         topic: str,
         slide_count: int = 8,
         language: str = "kk",
-        style: str = "",
+        style: str = "academic",
         require_conclusion: bool = False,
         require_statistics: bool = False,
         require_sources: bool = False,

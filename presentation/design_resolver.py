@@ -1,21 +1,11 @@
 """
 presentation/design_resolver.py
 ────────────────────────────────────────────────────────────────────────────
-Phase 2: DesignResolver — priority-based resolution of DesignSpec.
+DesignResolver — passes Gemini's design decisions through without overriding.
 
-Priority order (Phase 2)
--------------------------
-0. Explicit DesignIntent  →  user said "red background", "Arial font", etc.
-1. Explicit user style    →  academic / modern / minimal
-2. Topic-aware            →  ThemeSelector / TopicClassifier
-3. Default                →  neutral palette + academic fonts
-
-Phase 5 will add:
-    between 0 and 1: BrandConfig constraints
-
-Backward compatibility
------------------------
-If design_intent is None (or empty), behavior is IDENTICAL to Phase 1.
+Gemini provides the full visual design (fonts, colors, layout, spacing).
+This resolver only applies explicit user DesignIntent overrides on top.
+No preset style logic (academic/modern/minimal) is applied here.
 """
 
 from __future__ import annotations
@@ -23,140 +13,77 @@ from __future__ import annotations
 import logging
 
 from ai.design_intent import DesignIntent
-from presentation.styles import get_theme
-from presentation.theme_selector import (
-    ThemeSelector,
-    TopicProfile,
-    Palette,
-    get_palette,
-    palette_to_theme,
-)
-from presentation.design_spec import (
-    BrandConfig,
-    DesignSpec,
-    STYLE_FAMILY_MAP,
-    _FONT_PAIRS,
-)
+from presentation.design_spec import BrandConfig, DesignSpec
+from presentation.theme_selector import Palette, get_palette
 
 logger = logging.getLogger(__name__)
-
-# ── Singleton theme selector (mirrors renderer.py's current singleton) ────
-_theme_selector = ThemeSelector()
-
-# ── Styles that count as an explicit user choice ──────────────────────────
-_EXPLICIT_STYLES = frozenset({"academic", "modern", "minimal"})
 
 
 class DesignResolver:
     """
-    Resolves a DesignSpec from plan metadata and optional DesignIntent.
+    Resolves a DesignSpec from DesignIntent and optional fallback palette.
 
-    Usage (Phase 2)::
-
-        resolver = DesignResolver()
-
-        # With explicit intent
-        intent = DesignIntent(background_color="#C0392B", style_hint="minimal")
-        spec = resolver.resolve(topic="Табиғат", style="minimal",
-                                style_is_explicit=True, design_intent=intent)
-
-        # Without intent — identical to Phase 1 behavior
-        spec = resolver.resolve(topic="Ғарыш", style="modern",
-                                style_is_explicit=True)
-
-        theme = spec.to_theme()
+    Priority:
+        0. Explicit DesignIntent colors/fonts  → user overrides
+        1. Neutral palette defaults            → fallback only
     """
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def resolve(
         self,
         topic: str,
-        style: str,
+        style: str = "",
         style_is_explicit: bool = False,
         design_intent: DesignIntent | None = None,
     ) -> DesignSpec:
         """
-        Return a DesignSpec applying the priority hierarchy.
+        Return a DesignSpec.
 
-        Parameters
-        ----------
-        topic            : Presentation topic (any language).
-        style            : "academic" | "modern" | "minimal" from PresentationPlan.
-        style_is_explicit: True when the user actively chose the style.
-        design_intent    : Explicit visual preferences; None = no preferences.
+        When design_intent is provided and non-empty, its values take priority.
+        The style/topic parameters are accepted for backward compatibility
+        but no longer select a preset theme.
         """
-        # Priority 0 — explicit DesignIntent (Phase 2)
         if design_intent is not None and not design_intent.is_empty():
-            return self._from_intent(
-                design_intent, topic, style, style_is_explicit
-            )
+            return self._from_intent(design_intent)
 
-        # Priority 1 — explicit style choice (Phase 1 behavior)
-        if style_is_explicit and style in _EXPLICIT_STYLES:
-            return self._from_explicit_style(style)
+        return self._default()
 
-        # Priority 2 — topic-aware (Phase 1 behavior)
-        return self._from_topic(topic, style)
+    def _from_intent(self, intent: DesignIntent) -> DesignSpec:
+        """Apply explicit user DesignIntent over a neutral base palette."""
+        try:
+            base_palette = get_palette("neutral")
+        except KeyError:
+            base_palette = _minimal_palette()
 
-    # ------------------------------------------------------------------
-    # Private resolution paths
-    # ------------------------------------------------------------------
+        bg      = intent.background_color or base_palette.background
+        primary = intent.primary_color    or base_palette.primary
+        accent  = intent.accent_color     or base_palette.accent
 
-    def _from_intent(
-        self,
-        intent: DesignIntent,
-        topic: str,
-        style: str,
-        style_is_explicit: bool,
-    ) -> DesignSpec:
-        """
-        Priority 0 — user stated explicit design preferences.
+        overridden = Palette(
+            name="intent_override",
+            background=bg,
+            surface=bg,
+            text_primary=base_palette.text_primary,
+            text_secondary=base_palette.text_secondary,
+            text_on_dark=base_palette.text_on_dark,
+            primary=primary,
+            accent=accent,
+            border=base_palette.border,
+            success=base_palette.success,
+            warning=base_palette.warning,
+        )
 
-        Strategy:
-        1. Start from the base DesignSpec that would have been chosen by
-           Priority 1 or 2 (style or topic) — this provides sensible defaults
-           for anything the user did NOT specify.
-        2. Apply DesignIntent overrides field-by-field on top of the base.
-
-        This means:
-        - "red background, nature topic" → nature palette colors EXCEPT
-          background, which becomes red.
-        - "minimal style, Arial heading font" → minimal palette + Arial heading.
-        - "red background only" → topic palette with red background override.
-        """
-        # Step 1: resolve base spec from lower-priority rules
-        if style_is_explicit and style in _EXPLICIT_STYLES:
-            base_spec = self._from_explicit_style(style)
-        else:
-            base_spec = self._from_topic(topic, style)
-
-        # Step 2: build an overridden Palette from intent
-        base_palette  = base_spec.palette
-        overridden    = self._apply_intent_to_palette(base_palette, intent)
-
-        # Step 3: derive fonts — intent explicit fonts take priority
-        font_h = intent.font_heading or base_spec.font_heading
-        font_b = intent.font_body    or base_spec.font_body
-
-        # Step 4: style_family — intent style_hint overrides base if present
-        if intent.style_hint:
-            family  = STYLE_FAMILY_MAP.get(intent.style_hint, base_spec.style_family)
-        else:
-            family  = base_spec.style_family
-
-        # Step 5: density
-        density = intent.density_hint or base_spec.density
+        font_h = intent.font_heading or "Calibri"
+        font_b = intent.font_body    or "Calibri"
+        family = intent.style_hint   or "default"
+        density = intent.density_hint or "normal"
 
         logger.info(
             "DesignResolver: intent | bg=%s primary=%s accent=%s "
-            "font_h=%s font_b=%s style=%s density=%s",
+            "font_h=%s font_b=%s density=%s",
             intent.background_color,
             intent.primary_color,
             intent.accent_color,
-            font_h, font_b, family, density,
+            font_h, font_b, density,
         )
 
         return DesignSpec(
@@ -169,164 +96,38 @@ class DesignResolver:
             resolved_from="design_intent",
         )
 
-    @staticmethod
-    def _apply_intent_to_palette(base: Palette, intent: DesignIntent) -> Palette:
-        """
-        Return a new Palette with intent overrides applied.
-
-        Only fields explicitly set in DesignIntent are changed;
-        everything else is inherited from base.
-        """
-        # Palette is a frozen dataclass — recreate with overrides
-        bg      = intent.background_color or base.background
-        primary = intent.primary_color    or base.primary
-        accent  = intent.accent_color     or base.accent
-
-        # Derive text_on_dark based on background brightness:
-        # if user set a dark background keep existing text_on_dark,
-        # if they set a light background keep it too — we don't auto-invert.
-        return Palette(
-            name=f"intent_override",
-            background=bg,
-            surface=bg,                   # surface mirrors background
-            text_primary=base.text_primary,
-            text_secondary=base.text_secondary,
-            text_on_dark=base.text_on_dark,
-            primary=primary,
-            accent=accent,
-            border=base.border,
-            success=base.success,
-            warning=base.warning,
-        )
-
-    def _from_explicit_style(self, style: str) -> DesignSpec:
-        """Priority 1 — user explicitly chose academic / modern / minimal."""
-        # Reuse the existing get_theme() so Theme stays the authority on
-        # fixed-style palettes.  We then reverse-map back to a Palette.
-        theme = get_theme(style)
-        palette = self._palette_from_theme(theme, style)
-
-        font_h, font_b = _FONT_PAIRS.get(style, _FONT_PAIRS["default"])
-
-        logger.info(
-            "DesignResolver: explicit style=%r → palette=%r fonts=%s/%s",
-            style, palette.name, font_h, font_b,
-        )
-
-        return DesignSpec(
-            palette=palette,
-            font_heading=font_h,
-            font_body=font_b,
-            style_family=STYLE_FAMILY_MAP.get(style, "academic"),
-            density="normal",
-            brand=None,
-            resolved_from="explicit_style",
-        )
-
-    def _from_topic(self, topic: str, style: str) -> DesignSpec:
-        """Priority 2 — topic-aware via ThemeSelector."""
-        theme, profile = _theme_selector.select_with_profile(topic)
+    def _default(self) -> DesignSpec:
+        """Neutral fallback — no preset style imposed."""
         try:
-            palette = get_palette(profile.palette_name)
-        except KeyError:
             palette = get_palette("neutral")
+        except KeyError:
+            palette = _minimal_palette()
 
-        # Font pair: derive from palette mood (same logic as palette_to_theme)
-        font_h, font_b = self._fonts_from_palette(palette.name)
-
-        logger.info(
-            "DesignResolver: topic-aware | topic=%r → category=%r "
-            "palette=%r confidence=%.2f primary=%s accent=%s",
-            topic,
-            profile.primary_category,
-            profile.palette_name,
-            profile.confidence,
-            theme.primary,
-            theme.accent,
-        )
+        logger.debug("DesignResolver: using neutral default palette")
 
         return DesignSpec(
             palette=palette,
-            font_heading=font_h,
-            font_body=font_b,
-            style_family=self._family_from_profile(profile),
+            font_heading="Calibri",
+            font_body="Calibri",
+            style_family="default",
             density="normal",
             brand=None,
-            resolved_from="topic_aware",
+            resolved_from="default",
         )
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _palette_from_theme(theme, style: str):
-        """
-        Map a fixed Theme back to a Palette for DesignSpec.
-
-        For the three explicit styles we keep a direct mapping so we don't
-        duplicate any color values — the Theme remains the authority.
-        We synthesise a minimal Palette that round-trips correctly through
-        palette_to_theme().
-        """
-        from presentation.theme_selector import Palette as _Palette
-
-        # Map style name → closest topic palette (same colours as the fixed Theme)
-        _STYLE_PALETTE_MAP = {
-            "academic": "neutral",    # Deep navy / gold → closest neutral
-            "modern":   "technology", # Indigo / cyan → tech palette
-            "minimal":  "neutral",    # Greyscale → neutral
-        }
-
-        base_palette_name = _STYLE_PALETTE_MAP.get(style, "neutral")
-        try:
-            base = get_palette(base_palette_name)
-        except KeyError:
-            base = get_palette("neutral")
-
-        # Override the base palette's brand colors with the fixed Theme's
-        # values so DesignSpec.to_theme() produces an identical Theme.
-        return _Palette(
-            name=style,
-            background=theme.background,
-            surface=theme.background,      # no separate surface in Theme
-            text_primary=theme.text_dark,
-            text_secondary=theme.secondary,
-            text_on_dark=theme.text_light,
-            primary=theme.primary,
-            accent=theme.accent,
-            border=theme.secondary,
-            success=base.success,           # inherit from base
-            warning=base.warning,
-        )
-
-    @staticmethod
-    def _fonts_from_palette(palette_name: str) -> tuple[str, str]:
-        """Derive font pair from palette name — mirrors palette_to_theme() logic."""
-        warm = {"history", "agriculture", "nature"}
-        tech = {"technology", "technology_business", "space"}
-
-        if palette_name in warm:
-            return "Georgia", "Calibri"
-        if palette_name in tech:
-            return "Arial", "Arial"
-        return "Cambria", "Calibri"
-
-    @staticmethod
-    def _family_from_profile(profile: TopicProfile) -> str:
-        """Map topic mood → style_family token."""
-        mood_map = {
-            "organic":              "editorial",
-            "fluid":                "minimal",
-            "clinical":             "academic",
-            "digital":              "modern",
-            "professional-digital": "modern",
-            "authoritative":        "academic",
-            "warm-heritage":        "editorial",
-            "cosmic":               "modern",
-            "scholarly":            "academic",
-            "professional":         "academic",
-            "earthy":               "editorial",
-            "natural-fluid":        "editorial",
-        }
-        return mood_map.get(profile.visual_mood, "academic")
+def _minimal_palette() -> Palette:
+    """Emergency fallback Palette when theme_selector has no 'neutral'."""
+    return Palette(
+        name="fallback",
+        background="#FFFFFF",
+        surface="#FFFFFF",
+        text_primary="#111111",
+        text_secondary="#555555",
+        text_on_dark="#FFFFFF",
+        primary="#1E3A5F",
+        accent="#E67E22",
+        border="#CCCCCC",
+        success="#27AE60",
+        warning="#F39C12",
+    )
